@@ -1,0 +1,362 @@
+AI-Based BDS Positioning Reliability Assessment
+for Disaster Response Navigation
+Full Project Plan
+Multiclass reliability classification with Random Forest, XGBoost and LightGBM. BDS-only scope, dataset already extracted, no code.
+1. Project Overview
+This plan replaces the earlier M2DGR-based version. M2DGR is no longer part of the project. The scope is now limited to a single data source: BDS observations from IGS/MGEX ground stations, processed through RTKLIB. The feature table has already been extracted from this data, so this plan starts from the point where labelling begins and carries through to the final report.
+The objective is unchanged in spirit. The project still asks whether a BDS position estimate can be trusted, and it still connects that answer to a navigation decision for an autonomous rescue robot. The robot is not simulated and not built. The two IGS stations act as a stand-in for a receiver under open-sky and obstructed conditions, and the model output represents the kind of signal a rescue robot would use to decide how much to rely on BDS at a given moment.
+Three tree-based models are trained and compared on the same data and the same split: Random Forest, XGBoost, and LightGBM. The comparison is the main technical contribution of this version of the project, since the original brief only asked for two models.
+2. Research Aim and Objectives
+Aim: build a three-class BDS positioning reliability classifier from RTKLIB-derived ground station features, and identify which of three tree-based models gives the safest detection of unreliable positioning.
+Generate reliability class labels from the true horizontal positioning error already present in the dataset.
+Train Random Forest, XGBoost, and LightGBM on identical features, identical class labels, and identical train-test split.
+Compare the three models on overall accuracy, per-class recall, and Class 2 recall in particular.
+Rank the features driving the classification decision, and check whether the three models agree on which features matter most.
+Translate the best model's output into a rescue robot decision table.
+3. Dataset Description
+3.1 Source and Stations
+The data comes from the IGS Multi-GNSS Experiment (MGEX) archive at NASA CDDIS, processed in BDS-only single point positioning mode through RTKLIB. Two stations are used.
+JFNG, Wuhan University. Open-sky baseline conditions.
+URUM, Xinjiang Astronomical Observatory, Urumqi. Partially obstructed western China terrain.
+Two dates are covered for each station: 18 December 2023, the date of the Jishishan, Gansu earthquake, and 10 December 2023, used as a clean reference date.
+Dataset
+Epochs (approx)
+Role
+Expected Dominant Class
+JFNG, 18 Dec 2023
+2,880
+Training
+Mostly Class 0
+JFNG, 10 Dec 2023
+2,880
+Training
+Mostly Class 0
+URUM, 10 Dec 2023
+2,880
+Training
+Mix of Class 0 and 1
+URUM, 18 Dec 2023
+2,880
+Test only, never trained on
+Class 0, 1 and 2
+ 
+3.2 Ground Truth Coordinates
+Both stations are fixed IGS reference stations with published ITRF2020 coordinates, used as ground truth for computing the true horizontal positioning error.
+Station
+Latitude
+Longitude
+Height
+JFNG, Wuhan
+30.5168 N
+114.4914 E
+33.64 m
+URUM, Urumqi
+43.8081 N
+87.6006 E
+859.62 m
+ 
+Exact millimetre-level coordinates should be confirmed from the station logs at network.igs.org before final label generation. The approximate values above are sufficient for early-stage processing.
+4. Feature Set (Already Extracted)
+The feature table is one row per 30-second epoch. The columns below are already available in the extracted dataset. Two columns, true_h_error_m and station_date, are kept in the table for labelling and traceability, but they are excluded from model input.
+Feature
+Used as Model Input
+Description
+num_satellites
+Yes
+Number of BDS satellites contributing to the position fix at this epoch.
+pdop
+Yes
+Position dilution of precision. Higher values mean worse satellite geometry.
+sdn
+Yes
+RTKLIB's estimated standard deviation of the north component.
+sde
+Yes
+RTKLIB's estimated standard deviation of the east component.
+pos_uncertainty
+Yes
+Derived feature: square root of sdn squared plus sde squared. RTKLIB's own confidence estimate.
+snr_mean
+Yes
+Mean signal-to-noise ratio across visible BDS satellites at this epoch.
+snr_min
+Yes
+Weakest satellite in view. Flags potentially compromised signals.
+snr_max
+Yes
+Strongest satellite in view. Used for context, not normalisation.
+snr_std
+Yes
+Spread of signal quality across satellites. High spread suggests mixed conditions.
+bds_sat_count_obs
+Yes
+Number of BDS satellites actually tracked in the raw observation file.
+pos_lat, pos_lon, pos_height
+No
+Estimated position. Used only to compute the true error, not as a predictor.
+solution_quality
+No
+RTKLIB quality flag. Expected to be constant (single solution) across this BDS-only dataset, so it carries little predictive value.
+true_h_error_m
+No, label source only
+True horizontal error against ground truth. Used to generate the class label, never given to the model.
+station_date
+No, identifier only
+Tags which file each row came from. Used for traceability, not for training.
+ 
+Ten columns form the actual model input: num_satellites, pdop, sdn, sde, pos_uncertainty, snr_mean, snr_min, snr_max, snr_std, and bds_sat_count_obs. Every model in this project is trained and evaluated on this same set of ten features, so any difference in results comes from the model itself and not from a difference in inputs.
+5. Label Generation Methodology
+Each epoch receives a reliability class from 0 to 2, based on the true horizontal error and, for Class 2, on supporting satellite geometry conditions.
+Class
+Label
+Threshold Rule
+Operational Meaning
+0
+Reliable
+true_h_error_m < 3 m
+BDS is trustworthy. Robot navigates normally.
+1
+Caution
+true_h_error_m between 3 and 10 m
+BDS is degraded. Robot slows and cross-checks.
+2
+Unreliable
+true_h_error_m > 10 m, or num_satellites < 4, or pdop > 10
+BDS is unsafe. Robot switches to alternative navigation.
+ 
+Apply these rules to every row in all four datasets and print the class distribution for each dataset separately before merging. JFNG should be heavily Class 0. URUM should carry more Class 1 and some Class 2. If Class 2 is empty across all four datasets after applying the 10 metre threshold, lower it to 5 metres and reapply. This is a methodological choice, not an error, and the chosen threshold must be stated clearly in the report.
+6. Train-Test Split Strategy
+The training set stacks three datasets: JFNG 18 December, JFNG 10 December, and URUM 10 December. These cover open-sky conditions and obstructed conditions on a normal day, so the model learns what reliable, degraded, and poor BDS performance looks like across environments.
+The test set is URUM 18 December only, the earthquake date in obstructed terrain. It is never touched during training. This gives the project a result that is tied to a real event rather than an arbitrary random split, and it is the hardest available test of all three models.
+Add a station_date identifier column to each file before merging, so that rows can be traced back to their source after the four datasets are combined.
+7. Model Training Plan
+All three models are trained on the same ten input features, the same reliability_class target, the same training rows, and the same random seed where applicable. This keeps the comparison fair: any difference in results reflects the model, not the data.
+7.1 Random Forest (Baseline, Interpretable Model)
+Random Forest is the baseline model. It handles tabular features without scaling, copes well with mixed feature ranges, and produces a feature importance ranking directly.
+Parameter
+Value
+Reason
+Number of trees
+200
+Sufficient for this data size, with diminishing returns beyond this point.
+Class weight
+Balanced
+Compensates for Class 0 dominance. Without it the model may ignore Class 2.
+Random state
+42
+Fixed seed for reproducibility across runs and team members.
+Maximum depth
+None, then 10
+Start unconstrained to see full capacity. Constrain if training accuracy is far above test accuracy.
+Evaluation priority
+Recall for Class 2
+The safety-critical metric. A missed Class 2 means the robot trusted an unsafe position.
+ 
+7.2 XGBoost (Gradient Boosting Comparison)
+XGBoost builds trees sequentially, with each tree correcting the errors of the previous ones. It often improves recall on minority classes compared to Random Forest, which makes it a natural second model for this problem.
+Parameter
+Value
+Reason
+Number of trees
+200
+Matched to Random Forest for a fair comparison.
+Maximum depth
+6
+Standard starting depth for tabular gradient boosting.
+Learning rate
+0.1
+Standard default, balances training speed and stability.
+Objective
+Multi-class softprob
+Outputs class probabilities for all three classes.
+Class imbalance handling
+Sample weights from inverse class frequency
+XGBoost has no built-in class_weight parameter, so imbalance is handled through per-row sample weights.
+Random state
+42
+Matched to Random Forest for reproducibility.
+ 
+7.3 LightGBM (Third Tree-Based Model)
+LightGBM is a second gradient boosting implementation, built around a leaf-wise growth strategy rather than the level-wise growth used by most other boosting libraries. It is included as a third model because it sometimes behaves differently from XGBoost on minority class recall, even though both are boosting methods. Comparing three models rather than two checks whether strong Class 2 recall is a general result or specific to one library.
+Parameter
+Value
+Reason
+Number of trees
+200
+Matched to the other two models.
+Number of leaves
+31
+LightGBM's default leaf-wise complexity control, used instead of a depth limit.
+Learning rate
+0.1
+Matched to XGBoost for comparability.
+Class weight
+Balanced
+Same imbalance handling concept as Random Forest, available directly in LightGBM.
+Objective
+Multiclass
+Three-class softmax-style output.
+Random state
+42
+Matched across all three models.
+8. Evaluation Plan
+Every model is evaluated only on the URUM 18 December test set. For each model, record the following before moving to the next stage.
+A 3 by 3 confusion matrix: predicted class versus true class.
+Precision, recall, and F1 score for each of the three classes.
+Overall accuracy.
+Recall for Class 2 specifically, treated as the primary safety metric.
+Feature importance ranking, sorted from most to least important.
+The most dangerous error in any confusion matrix is a true Class 2 epoch predicted as Class 0. This means the model told the robot the position was reliable when it was actually unsafe. This cell should be reported explicitly for all three models, not just summarised in an accuracy figure.
+Model
+Accuracy
+Class 2 Recall
+Class 2 Precision
+Class 0 Recall
+Random Forest
+fill in
+fill in
+fill in
+fill in
+XGBoost
+fill in
+fill in
+fill in
+fill in
+LightGBM
+fill in
+fill in
+fill in
+fill in
+ 
+This comparison table is the centrepiece of the results section. It should be filled in only after all three models have been trained and evaluated under identical conditions.
+9. Model Comparison Framework
+The model selected for the rescue robot decision framework is chosen using the following order of priority, not by accuracy alone.
+Highest recall for Class 2, since a missed unsafe reading is the most dangerous failure mode.
+If two models tie closely on Class 2 recall, prefer the one with higher overall accuracy.
+If accuracy is also close, prefer the simpler or faster model for a future real-time deployment.
+Alongside the metric comparison, check whether the three models agree on which features matter most. If num_satellites, pdop, or pos_uncertainty consistently rank at the top across Random Forest, XGBoost, and LightGBM, that is a stronger and more trustworthy finding than a single model's importance ranking on its own.
+10. Decision Framework
+The decision framework translates the chosen model's output into rescue robot actions. The accuracy and signal ranges in the table below are indicative starting points from the original data dictionary. They must be replaced with the actual ranges observed in the project's own feature distributions before the table is finalised.
+Class
+BDS State
+Observable Signals
+Robot Action
+0, Reliable
+True error under 3 m, strong geometry, full fix
+num_satellites > 8, PDOP < 3, SNR mean > 38 dB-Hz, pos_uncertainty < 2 m
+Continue normal BDS-guided navigation at full speed.
+1, Caution
+True error 3 to 10 m, degraded geometry or weak signals
+num_satellites 5 to 8, PDOP 3 to 6, SNR mean 30 to 38 dB-Hz, pos_uncertainty 2 to 5 m
+Reduce speed, cross-check with other sensors, notify operator.
+2, Unreliable
+True error above 10 m, very few satellites, or extreme PDOP
+num_satellites < 5, PDOP > 6, SNR mean < 30 dB-Hz, pos_uncertainty > 5 m
+Treat BDS as unavailable, switch to alternative localisation, send alert.
+11. Report Structure
+Section
+Length
+Content
+Abstract
+200 words
+One sentence on the problem, one on data and method, two on key results across the three models, one on conclusion.
+1. Introduction
+1 page
+Jishishan 2023 as motivation, BDS as the operational positioning system, the core question of when to trust BDS, project aim in one sentence.
+2. Dataset
+Half page
+IGS MGEX CDDIS source, JFNG and URUM with coordinates and environment, two dates and why, ground truth coordinates, honest note that these are static stations used as a proxy.
+3. Methodology
+1 page
+Labelling rule, train-test split, and the three model configurations. One paragraph per model. Include the feature table and the label threshold table.
+4. Results
+1 to 1.5 pages
+Class distribution table, the three confusion matrices side by side, the model comparison table from Section 8, feature importance ranking and agreement across models.
+5. Rescue Application
+Half page
+The decision table from Section 10, two sentences on operational implications, one sentence on what is needed for real deployment.
+6. Conclusion
+Quarter page
+What was demonstrated, which model is recommended and why, key limitation, natural next step.
+References
+As needed
+IGS MGEX, CDDIS, Jishishan earthquake source, RTKLIB, scikit-learn, XGBoost, LightGBM.
+12. Presentation Structure (Ten Slides)
+Slide
+Title
+Content
+1
+Title
+Project title, team names, course name, date.
+2
+The Problem
+Earthquake rescue robots depend on BDS. BDS degrades in disaster terrain. Can AI detect when BDS is unsafe?
+3
+Solution
+BDS features into AI classifier into Class 0, 1, or 2, into robot action. No more than 15 words of running text.
+4
+Dataset
+JFNG and URUM on a map of China, two dates, five files, one sentence on why static stations are a valid proxy.
+5
+Methodology
+Boxes connected by arrows: RTKLIB, coordinates, features, labels, train-test split, three model training.
+6
+BDS Signal Environment
+Accuracy table comparing JFNG and URUM on both dates. Key finding on how URUM degrades versus JFNG.
+7
+AI Results
+Confusion matrices for Random Forest, XGBoost, and LightGBM side by side. Class 2 recall highlighted.
+8
+Feature Importance
+Horizontal bar chart of top features, compared across the three models. Two bullet interpretation.
+9
+Decision Framework
+The full decision table from Section 10.
+10
+Conclusions
+BDS accuracy finding, best-performing model and why, future work on a dynamic platform with IMU.
+13. Expected Results Reference
+These ranges are a sanity check, not a target to force. If actual results fall far outside these ranges, re-examine feature extraction and labelling before retraining.
+Result
+JFNG Expected Range
+URUM Expected Range
+Average BDS satellites per epoch
+15 to 22
+20 to 28
+Mean PDOP
+1.5 to 3.0
+2.0 to 5.0
+BDS-only RMSE horizontal
+1.0 to 3.5 m
+3.0 to 8.0 m
+95th percentile horizontal error
+2.0 to 6.0 m
+6.0 to 18.0 m
+Class 0 proportion
+75 to 95%
+40 to 70%
+Class 1 proportion
+5 to 20%
+20 to 40%
+Class 2 proportion
+1 to 5%
+5 to 20%
+Overall accuracy on URUM 18 Dec test set
+80 to 92%, all three models
+80 to 92%, all three models
+Class 2 recall target
+Above 0.70, all three models
+Above 0.70, all three models
+14. Limitations and Future Work
+Both stations are static. The project does not capture how a moving rescue robot would behave, since motion introduces its own position uncertainty that a fixed station does not have.
+Only two dates are covered. Seasonal, weather, and ionospheric variation across a longer period is not tested.
+The dataset is BDS-only single point positioning. No RTK fixed solution, no IMU, and no LiDAR are part of this scope, since M2DGR has been removed.
+Future work: extend the framework to a moving platform with IMU fusion, test additional boosting libraries such as CatBoost, and validate the labelling thresholds against a longer time series before any real deployment.
+15. References
+IGS Multi-GNSS Experiment (MGEX) archive, NASA CDDIS.
+International GNSS Service (IGS) network station logs, network.igs.org.
+Jishishan, Gansu earthquake event record, 18 December 2023.
+RTKLIB: An Open Source Program Package for GNSS Positioning.
+scikit-learn: Machine Learning in Python.
+XGBoost: A Scalable Tree Boosting System.
+LightGBM: A Highly Efficient Gradient Boosting Decision Tree.
